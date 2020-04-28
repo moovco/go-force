@@ -18,6 +18,41 @@ const (
 	testEnvironment   = "production"
 )
 
+func CreatePassword(version, baseURI, environment, userName, password string) (*ForceApi, error) {
+	oauth := &forceOauth{
+		baseURI:     baseURI,
+		userName:    userName,
+		password:    password,
+		environment: environment,
+	}
+
+	forceApi := &ForceApi{
+		apiResources:           make(map[string]string),
+		apiSObjects:            make(map[string]*SObjectMetaData),
+		apiSObjectDescriptions: make(map[string]*SObjectDescription),
+		apiVersion:             version,
+		oauth:                  oauth,
+	}
+
+	// Init oauth
+	err := forceApi.oauth.Authenticate()
+	if err != nil {
+		return nil, err
+	}
+
+	// Init Api Resources
+	err = forceApi.getApiResources()
+	if err != nil {
+		return nil, err
+	}
+	err = forceApi.getApiSObjects()
+	if err != nil {
+		return nil, err
+	}
+
+	return forceApi, nil
+}
+
 func Create(version, clientId, clientSecret, userName, password, securityToken,
 	environment string) (*ForceApi, error) {
 	oauth := &forceOauth{

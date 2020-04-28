@@ -2,12 +2,17 @@ package force
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"html"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 )
+
+const SOAP_VERSION = "1.9.3"
 
 const (
 	grantType    = "password"
@@ -31,6 +36,7 @@ type forceOauth struct {
 	password      string
 	securityToken string
 	environment   string
+	baseURI       string
 }
 
 func (oauth *forceOauth) Validate() error {
@@ -52,6 +58,84 @@ func (oauth *forceOauth) Expired(apiErrors ApiErrors) bool {
 }
 
 func (oauth *forceOauth) Authenticate() error {
+	if oauth.clientId == "" {
+		return oauth.AuthenticatePassword()
+	}
+
+	return oauth.AuthenticateOauth()
+
+}
+
+// LoginPassword signs into salesforce using password. token is optional if trusted IP is configured.
+// Ref: https://developer.salesforce.com/docs/atlas.en-us.214.0.api_rest.meta/api_rest/intro_understanding_username_password_oauth_flow.htm
+// Ref: https://developer.salesforce.com/docs/atlas.en-us.214.0.api.meta/api/sforce_api_calls_login.htm
+func (oauth *forceOauth) AuthenticatePassword() error {
+	// Use the SOAP interface to acquire session ID with username, password, and token.
+	// Do not use REST interface here as REST interface seems to have strong checking against client_id, while the SOAP
+	// interface allows a non-exist placeholder client_id to be used.
+	soapBody := `<?xml version="1.0" encoding="utf-8" ?>
+        <env:Envelope
+                xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                xmlns:env="http://schemas.xmlsoap.org/soap/envelope/"
+                xmlns:urn="urn:partner.soap.sforce.com">
+            <env:Body>
+                <n1:login xmlns:n1="urn:partner.soap.sforce.com">
+                    <n1:username>%s</n1:username>
+                    <n1:password>%s</n1:password>
+                </n1:login>
+            </env:Body>
+        </env:Envelope>`
+	soapBody = fmt.Sprintf(soapBody, oauth.userName, html.EscapeString(oauth.password))
+	log.Println(soapBody)
+	url := fmt.Sprintf("%s/services/Soap/u/%s", "https://"+oauth.baseURI, SOAP_VERSION)
+	log.Println(url)
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(soapBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Add("Content-Type", "text/xml")
+	req.Header.Add("charset", "UTF-8")
+	req.Header.Add("SOAPAction", "login")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+	respData, err := ioutil.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Status code not ok %v %v", resp.StatusCode, string(respData))
+	}
+
+	if err != nil {
+		return err
+	}
+
+	var loginResponse struct {
+		XMLName      xml.Name `xml:"Envelope"`
+		ServerURL    string   `xml:"Body>loginResponse>result>serverUrl"`
+		SessionID    string   `xml:"Body>loginResponse>result>sessionId"`
+		UserID       string   `xml:"Body>loginResponse>result>userId"`
+		UserEmail    string   `xml:"Body>loginResponse>result>userInfo>userEmail"`
+		UserFullName string   `xml:"Body>loginResponse>result>userInfo>userFullName"`
+		UserName     string   `xml:"Body>loginResponse>result>userInfo>userName"`
+	}
+
+	err = xml.Unmarshal(respData, &loginResponse)
+	if err != nil {
+		return err
+	}
+
+	oauth.AccessToken = loginResponse.SessionID
+	oauth.InstanceUrl = parseHost(loginResponse.ServerURL)
+
+	return nil
+}
+
+func (oauth *forceOauth) AuthenticateOauth() error {
 	payload := url.Values{
 		"grant_type":    {grantType},
 		"client_id":     {oauth.clientId},
@@ -105,4 +189,12 @@ func (oauth *forceOauth) Authenticate() error {
 	}
 
 	return nil
+}
+
+func parseHost(input string) string {
+	parsed, err := url.Parse(input)
+	if err == nil {
+		return fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
+	}
+	return "Failed to parse URL input"
 }
