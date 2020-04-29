@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -87,9 +86,7 @@ func (oauth *forceOauth) AuthenticatePassword() error {
             </env:Body>
         </env:Envelope>`
 	soapBody = fmt.Sprintf(soapBody, oauth.userName, html.EscapeString(oauth.password))
-	log.Println(soapBody)
 	url := fmt.Sprintf("%s/services/Soap/u/%s", "https://"+oauth.baseURI, SOAP_VERSION)
-	log.Println(url)
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(soapBody))
 	if err != nil {
 		return err
